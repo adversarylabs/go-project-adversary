@@ -1,0 +1,31 @@
+name: go-project
+version: 0.0.1
+description: Reviews Go repository structure, package ownership, dependency direction, and maintainability.
+
+triggers:
+  manual: true
+  files_changed:
+    - "**/*.go"
+
+detection:
+  files:
+    - "**/*.go"
+
+runtime:
+  name: node
+  version: "22"
+  command:
+    - dist/index.js
+
+permissions:
+  enforcement: advisory
+  filesystem:
+    read:
+      - .
+    write: []
+  network: false
+  environment:
+    allow: []
+
+findings:
+  format: adversary.review.v1
