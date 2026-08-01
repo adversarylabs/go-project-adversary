@@ -1,4 +1,3 @@
-module example.test/go-project-poor
+module github.com/example/poor
 
-go 1.25
-
+go 1.22

@@ -1,5 +1,3 @@
 package average
 
-var ready bool
-
-func init() { ready = true }
+func Ready() bool { return true }

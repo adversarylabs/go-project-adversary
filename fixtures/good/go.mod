@@ -1,4 +1,3 @@
-module example.test/go-project-good
+module github.com/example/good
 
-go 1.25
-
+go 1.22

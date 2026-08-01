@@ -1,4 +1,3 @@
-module example.test/go-project-terrible
+module github.com/example/terrible
 
-go 1.25
-
+go 1.22

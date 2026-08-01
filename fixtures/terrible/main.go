@@ -1,5 +1,3 @@
-package utils
+package terrible
 
-var Registry = map[string]func(){}
-
-func init() { Registry["default"] = func() {} }
+func main() {}

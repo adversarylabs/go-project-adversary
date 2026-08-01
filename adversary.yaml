@@ -1,15 +1,39 @@
-name: go-project
-version: 0.0.1
-description: Reviews Go repository structure, package ownership, dependency direction, and maintainability.
+name: go/project
+version: 0.0.2
+description: "Reviews Go repository hygiene: pipe-to-shell scripts, committed binaries, CI toolchain skew, and license presence."
 
 triggers:
   manual: true
   files_changed:
     - "**/*.go"
+    - "**/go.mod"
+    - "**/Makefile"
+    - "**/Taskfile.yml"
+    - "**/Taskfile.yaml"
+    - "**/*.sh"
+    - "**/.github/workflows/*.{yml,yaml}"
+    - "**/.gitlab-ci.yml"
+    - "**/LICENSE*"
+    - "**/COPYING*"
+    - "**/.gitignore"
+    - "**/.idea/**"
+    - "**/*.exe"
 
 detection:
   files:
     - "**/*.go"
+    - "**/go.mod"
+    - "**/Makefile"
+    - "**/Taskfile.yml"
+    - "**/Taskfile.yaml"
+    - "**/*.sh"
+    - "**/.github/workflows/*.{yml,yaml}"
+    - "**/.gitlab-ci.yml"
+    - "**/LICENSE*"
+    - "**/COPYING*"
+    - "**/.gitignore"
+    - "**/.idea/**"
+    - "**/*.exe"
 
 runtime:
   name: node

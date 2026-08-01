@@ -1,1 +1,1 @@
-{"risk":"none","findings":[],"positiveKeys":["go-project-explicit-construction"],"ship":true}
+{"risk":"none","findings":[],"positiveKeys":["go-project.explicit-construction","go-project.toolchain-from-mod"],"ship":true}

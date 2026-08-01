@@ -15806,75 +15806,236 @@ function positive(file, key, pattern, summary) {
 }
 
 // src/domain.ts
+function includePath(path) {
+  if (path.endsWith(".go")) return true;
+  if (/(^|\/)go\.(?:mod|work)$/.test(path)) return true;
+  if (/(^|\/)(?:[Mm]akefile|GNUmakefile|Taskfile\.ya?ml)$/.test(path)) return true;
+  if (/\.sh$/.test(path)) return true;
+  if (/(^|\/)\.github\/workflows\/.+\.ya?ml$/.test(path)) return true;
+  if (/(^|\/)\.gitlab-ci\.ya?ml$/.test(path)) return true;
+  if (/(^|\/)(?:LICENSE|COPYING|LICENCE)(?:$|\.)/i.test(path)) return true;
+  if (/(^|\/)\.gitignore$/.test(path)) return true;
+  if (/(^|\/)\.DS_Store$/.test(path)) return true;
+  if (/(^|\/)\.idea\//.test(path)) return true;
+  if (/\.(?:swp|swo)$/.test(path)) return true;
+  if (/(^|\/)Thumbs\.db$/i.test(path)) return true;
+  if (/\.exe$/i.test(path)) return true;
+  return false;
+}
 var domain = {
-  name: "go-project",
+  // Catalog / package identity uses domain/name taxonomy.
+  name: "go/project",
   displayName: "Go Project",
   observationKey: "go-project.analysis",
   sourceDescription: "Go project",
-  includePath: (path) => path.endsWith(".go") || /(^|\/)go\.(?:mod|work)$/.test(path),
+  includePath,
   rules: [
     {
-      id: "go-project.mutable-global",
-      title: "Package behavior depends on exported mutable global state",
-      category: "maintainability",
+      id: "go-project.script-curl-bash",
+      title: "Build tooling pipes remote content to a shell",
+      category: "security",
       severity: "high",
       confidence: "high",
-      summary: (count) => `${count} exported package variable${count === 1 ? "" : "s"} own mutable map, slice, or pointer state.`,
-      whyItMatters: "Exported mutable globals erase ownership boundaries and let any importer change package behavior.",
-      impact: "Tests, commands, and services become order-dependent and concurrent use requires coordination outside the package.",
-      recommendation: "Move the state behind an explicitly constructed owner with narrow methods and injected lifetime."
+      summary: (count) => `${count} build script site${count === 1 ? "" : "s"} pipe remote content into a shell.`,
+      whyItMatters: "curl|sh in Makefiles and bootstrap scripts executes attacker-controllable content on every dev machine and CI runner.",
+      impact: "Compromised installer endpoints run arbitrary code with developer and CI privileges.",
+      recommendation: "Download to a file, verify sha256, then execute; pin tool versions (`go install tool@v1.2.3`)."
     },
     {
-      id: "go-project.hidden-init",
-      title: "Package initialization performs hidden work",
-      category: "maintainability",
-      severity: "medium",
-      confidence: "medium",
-      summary: (count) => `${count} init function${count === 1 ? "" : "s"} introduce implicit package lifecycle.`,
-      whyItMatters: "Initialization runs on import, outside the caller's dependency, error, and cancellation model.",
-      impact: "Startup behavior becomes difficult to test, order, disable, or recover from.",
-      recommendation: "Prefer explicit construction or registration from the application boundary, especially for I/O and mutable state."
+      id: "go-project.committed-binary",
+      title: "A compiled executable is committed to the repository",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} committed binary path${count === 1 ? "" : "s"} are unreviewable supply-chain risk.`,
+      whyItMatters: "Opaque binaries in git are unreviewable and bloat every clone forever.",
+      impact: "Malicious payloads hide in committed Mach-O/ELF/PE that nobody diffs.",
+      recommendation: "Delete and build from source; use release artifacts or git-lfs for unavoidable blobs."
     },
     {
-      id: "go-project.catch-all-package",
-      title: "A catch-all package obscures domain ownership",
+      id: "go-project.ci-toolchain-skew",
+      title: "CI builds with a different Go version than the module",
+      category: "reliability",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => `${count} CI toolchain declaration${count === 1 ? "" : "s"} diverge from go.mod.`,
+      whyItMatters: "Version-gated language behavior silently differs between what CI tests and what you ship.",
+      impact: "Passes CI, fails locally (or the reverse) with loopvar/timer differences.",
+      recommendation: "Point CI at go.mod (`go-version-file: go.mod`) instead of duplicating the version."
+    },
+    {
+      id: "go-project.editor-junk",
+      title: "Editor or OS junk is tracked in the repository",
       category: "maintainability",
-      severity: "medium",
-      confidence: "medium",
-      summary: (count) => `${count} package declaration${count === 1 ? "" : "s"} use a generic ownership name.`,
-      whyItMatters: "Names such as utils, common, and shared attract unrelated dependencies and make navigation depend on implementation trivia.",
-      impact: "The package boundary becomes a coupling point rather than a coherent domain owner.",
-      recommendation: "Place the behavior with the domain that owns its invariant, or name a package after the capability it provides."
+      severity: "low",
+      confidence: "high",
+      summary: (count) => `${count} editor/OS junk path${count === 1 ? "" : "s"} are committed.`,
+      whyItMatters: "Noise in diffs and occasional local-path leakage; universally unwanted.",
+      impact: "Cluttered reviews and accidental machine-specific metadata in history.",
+      recommendation: "Remove and add patterns to .gitignore."
+    },
+    {
+      id: "go-project.license-missing",
+      title: "Published module has no LICENSE file",
+      category: "maintainability",
+      severity: "low",
+      confidence: "high",
+      summary: (count) => count === 1 ? "A public module path has no LICENSE/COPYING at the repository root." : `${count} public modules lack a LICENSE file.`,
+      whyItMatters: "Legally unusable by most companies; pkg.go.dev needs a recognized license.",
+      impact: "Consumers cannot adopt the module under standard open-source policy.",
+      recommendation: "Add a LICENSE file at the repository root."
     }
   ],
-  noRiskSummary: "The reviewed project changes preserve explicit ownership and understandable package boundaries.",
-  approvalSummary: "I would approve the repository structure represented by the reviewed change.",
+  noRiskSummary: "The reviewed project tooling avoids pipe-to-shell, binary commits, and toolchain skew.",
+  approvalSummary: "I would approve the repository hygiene represented by the reviewed change.",
   analyze(file) {
-    if (!file.path.endsWith(".go")) return { signals: [], positives: [] };
-    return {
-      signals: [
+    const signals = [];
+    if (isScriptLike(file.path)) {
+      signals.push(...curlBashSignals(file));
+      signals.push(
         ...lineSignals(
           file,
-          "go-project.mutable-global",
-          /^\s*var\s+([A-Z]\w*)\s*=\s*(?:map\[|\[\]|\&)/,
-          (match) => `Exported variable ${match[1]} owns mutable package state.`,
-          (match) => ({ symbol: match[1] })
-        ),
-        ...lineSignals(file, "go-project.hidden-init", /^\s*func\s+init\s*\(\s*\)/, () => "This package performs work implicitly at import time."),
-        ...lineSignals(
-          file,
-          "go-project.catch-all-package",
-          /^\s*package\s+(utils?|common|shared|helpers?)\s*$/,
-          (match) => `Package ${match[1]} has no domain-specific ownership boundary.`,
-          (match) => ({ package: match[1] })
+          "go-project.script-curl-bash",
+          /\bgo\s+install\b[^\n]*@latest\b/,
+          () => "Tool bootstrap installs at @latest instead of a pinned version."
         )
-      ],
+      );
+    }
+    if (isBinaryPath(file.path)) {
+      signals.push({
+        ruleId: "go-project.committed-binary",
+        path: file.path,
+        line: 1,
+        message: "Compiled executable path is tracked outside testdata.",
+        snippet: file.path,
+        data: { path: file.path }
+      });
+    }
+    if (isEditorJunk(file.path)) {
+      signals.push({
+        ruleId: "go-project.editor-junk",
+        path: file.path,
+        line: 1,
+        message: "Editor or OS metadata path is tracked in the repository.",
+        snippet: file.path,
+        data: { path: file.path }
+      });
+    }
+    return {
+      signals,
       positives: [
-        ...positive(file, "go-project-explicit-construction", /^\s*func\s+New[A-Z]\w*\s*\(/, "Package lifecycle is exposed through explicit construction.")
+        ...positive(
+          file,
+          "go-project.toolchain-from-mod",
+          /go-version-file:\s*go\.mod/,
+          "CI reads the Go version from go.mod."
+        ),
+        ...positive(
+          file,
+          "go-project.explicit-construction",
+          /^\s*func\s+New[A-Z]\w*\s*\(/,
+          "Package lifecycle is exposed through explicit construction."
+        )
       ]
     };
   }
 };
+function isScriptLike(path) {
+  return /(^|\/)(?:[Mm]akefile|GNUmakefile|Taskfile\.ya?ml)$/.test(path) || /\.sh$/.test(path) || /(^|\/)tools\/.+\.go$/.test(path);
+}
+function isBinaryPath(path) {
+  if (/(^|\/)testdata\//.test(path)) return false;
+  if (/\.exe$/i.test(path)) return true;
+  return false;
+}
+function isEditorJunk(path) {
+  return /(^|\/)\.DS_Store$/.test(path) || /(^|\/)\.idea\//.test(path) || /\.(?:swp|swo)$/.test(path) || /(^|\/)Thumbs\.db$/i.test(path);
+}
+function curlBashSignals(file) {
+  return lineSignals(
+    file,
+    "go-project.script-curl-bash",
+    /(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/,
+    () => "Remote content is piped directly into a shell."
+  );
+}
+function ciToolchainSkewSignals(files) {
+  const goMod = files.find((f) => /(^|\/)go\.mod$/.test(f.path));
+  if (goMod === void 0) return [];
+  const modVersion = parseGoModVersion(goMod.current);
+  if (modVersion === void 0) return [];
+  const signals = [];
+  for (const file of files) {
+    if (!/\.ya?ml$/.test(file.path)) continue;
+    if (!/(^|\/)\.github\/workflows\//.test(file.path) && !/(^|\/)\.gitlab-ci\.ya?ml$/.test(file.path)) {
+      continue;
+    }
+    if (/go-version-file:\s*go\.mod/.test(file.current)) continue;
+    file.current.split("\n").forEach((line, index) => {
+      const match = line.match(/go-version:\s*['"]?(\d+\.\d+(?:\.\d+)?)['"]?/);
+      if (match === null) return;
+      const ciVersion = match[1];
+      if (versionsCompatible(modVersion, ciVersion)) return;
+      signals.push({
+        ruleId: "go-project.ci-toolchain-skew",
+        path: file.path,
+        line: index + 1,
+        message: `CI go-version ${ciVersion} differs from go.mod Go ${modVersion}.`,
+        snippet: line.trim().slice(0, 300),
+        data: { ciVersion, modVersion }
+      });
+    });
+  }
+  return signals;
+}
+function licenseMissingSignals(files) {
+  const goMod = files.find((f) => /(^|\/)go\.mod$/.test(f.path) && !f.path.includes("/"));
+  const rootGoMod = files.find((f) => f.path === "go.mod") ?? files.find((f) => /(^|\/)go\.mod$/.test(f.path));
+  const modFile = rootGoMod ?? goMod;
+  if (modFile === void 0) return [];
+  const moduleMatch = modFile.current.match(/^\s*module\s+(\S+)/m);
+  if (moduleMatch === null) return [];
+  const modulePath = moduleMatch[1] ?? "";
+  if (!/^(?:github\.com|gitlab\.com|bitbucket\.org|golang\.org)\//.test(modulePath)) {
+    return [];
+  }
+  if (/\/(?:internal|private)\//.test(modulePath)) return [];
+  const hasLicense = files.some(
+    (f) => /(^|\/)(?:LICENSE|COPYING|LICENCE)(?:$|\.)/i.test(f.path)
+  );
+  if (hasLicense) return [];
+  const line = modFile.current.slice(0, moduleMatch.index ?? 0).split("\n").length;
+  return [
+    {
+      ruleId: "go-project.license-missing",
+      path: modFile.path,
+      line,
+      message: `Public module ${modulePath} has no LICENSE/COPYING in the reviewed tree.`,
+      snippet: (moduleMatch[0] ?? "").trim(),
+      data: { module: modulePath }
+    }
+  ];
+}
+function parseGoModVersion(source) {
+  const toolchain = source.match(/^\s*toolchain\s+go(\d+\.\d+(?:\.\d+)?)\s*$/m);
+  if (toolchain?.[1]) return toolchain[1];
+  const goLine = source.match(/^\s*go\s+(\d+\.\d+(?:\.\d+)?)\s*$/m);
+  return goLine?.[1];
+}
+function versionsCompatible(modVersion, ciVersion) {
+  const mod = parseSemver(modVersion);
+  const ci = parseSemver(ciVersion);
+  if (mod === void 0 || ci === void 0) return modVersion === ciVersion;
+  if (mod.major === ci.major && mod.minor === ci.minor) return true;
+  if (ci.major > mod.major) return true;
+  if (ci.major === mod.major && ci.minor >= mod.minor) return true;
+  return false;
+}
+function parseSemver(v) {
+  const m = v.match(/^(\d+)\.(\d+)(?:\.(\d+))?$/);
+  if (m === null) return void 0;
+  return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3] ?? 0) };
+}
 
 // src/parser.ts
 import { existsSync } from "node:fs";
@@ -19903,6 +20064,11 @@ async function analyzeDiscovery(discovery) {
       parseErrors.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
     }
   }
+  for (const signal of [...ciToolchainSkewSignals(discovery.files), ...licenseMissingSignals(discovery.files)]) {
+    const file = discovery.files.find((item) => item.path === signal.path);
+    if (file === void 0) continue;
+    if (changed(file, signal.line, signal.endLine)) signals.push(signal);
+  }
   return {
     mode: discovery.mode,
     ...discovery.base === void 0 ? {} : { base: discovery.base },
@@ -20125,8 +20291,8 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.1",
-    review: { maximumFindings: 5, minimumConfidence: "medium" }
+    version: "0.0.2",
+    review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {
     const discovery = await discoverSources(ctx.repoPath);

@@ -1,4 +1,3 @@
-module example.test/go-project-average
+module github.com/example/average
 
-go 1.25
-
+go 1.22

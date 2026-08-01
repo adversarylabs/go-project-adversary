@@ -1,1 +1,1 @@
-{"risk":"high","findings":[{"ruleId":"go-project.mutable-global","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
+{"risk":"high","findings":[{"ruleId":"go-project.script-curl-bash","severity":"high","evidenceCount":1}],"positiveKeys":[],"ship":false}
