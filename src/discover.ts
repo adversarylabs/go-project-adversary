@@ -1,5 +1,5 @@
-import type { RuleContext } from "@adversarylabs/sdk";
-import { domain } from "./domain.js";
+import { loadInScopeSources, type RuleContext } from "@adversarylabs/sdk";
+import { domain, isPrerequisiteDocument } from "./domain.js";
 import { type Discovery, type SourceRevision } from "./types.js";
 
 const MAX_FILE_BYTES = 750_000;
@@ -27,6 +27,24 @@ export async function discoverSources(ctx: RuleContext): Promise<Discovery> {
     changedLines: new Set<number>(),
     status: source.status === "repository" ? "repository" : "added",
   }));
+
+  if (!wholeTarget) {
+    const seen = new Set(files.map((file) => file.path));
+    const prerequisiteSources = await loadInScopeSources(ctx.repoPath, null, {
+      include: isPrerequisiteDocument,
+      limit: 100,
+      maxBytes: MAX_FILE_BYTES,
+    });
+    for (const source of prerequisiteSources) {
+      if (seen.has(source.path)) continue;
+      files.push({
+        path: source.path,
+        current: source.content,
+        changedLines: new Set<number>(),
+        status: "repository",
+      });
+    }
+  }
 
   return {
     mode: wholeTarget ? "repository" : "diff",

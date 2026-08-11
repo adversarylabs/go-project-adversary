@@ -4,15 +4,16 @@ Source of truth for what this adversary is *for*.
 
 - **Package:** `go-project`
 - **Factory routing:** human PR comments are attributed to this adversary only when they match **In scope**.
-- **Languages / surfaces:** Go repo hygiene
+- **Languages / surfaces:** Go repository hygiene and contributor tooling
 
 ## Mission
 
-Review Go repository hygiene: scripts, binaries, CI toolchain skew, licenses.
+Review Go repository hygiene: scripts, documented external tool prerequisites, binaries, CI toolchain skew, and licenses.
 
 ## In scope (fair miss if humans raised it and we did not)
 
 - Pipe-to-shell install scripts
+- Changed scripts that require a known nonstandard CLI omitted from contributor setup documentation
 - Committed binaries
 - CI Go toolchain skew
 - Missing license hygiene

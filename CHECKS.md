@@ -88,6 +88,17 @@ Public grounding: supply-chain guidance on pipe-to-shell installers, Go toolchai
 
 ## Low
 
+### `go-project.undocumented-cli-prerequisite`
+
+| | |
+| --- | --- |
+| **What** | A changed repository script requires a known nonstandard CLI omitted from contributor setup documentation |
+| **Why** | Contributors otherwise discover the dependency only after a local build or generation command fails |
+| **Looks for** | Command-position uses of `jq`, `node`, `sphinx-build`, or `wasm-pack` in changed Makefiles, Taskfiles, and shell scripts, cross-checked against README, CONTRIBUTING, and prerequisite/setup docs |
+| **Stays quiet when** | The current setup docs name the tool; the script explains how to install it; only POSIX utilities or repository-relative commands are used; or the script is unchanged repository context |
+| **Public examples** | devfile/api PR #1666 added `jq` and `node` script dependencies and subsequently documented both after review |
+| **Remediation** | Document the required tool or vendor it behind a repository-relative command |
+
 ### `go-project.editor-junk`
 
 | | |

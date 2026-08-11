@@ -17071,6 +17071,7 @@ function includePath(path) {
   if (/(^|\/)go\.(?:mod|work)$/.test(path)) return true;
   if (/(^|\/)(?:[Mm]akefile|GNUmakefile|Taskfile\.ya?ml)$/.test(path)) return true;
   if (/\.sh$/.test(path)) return true;
+  if (isPrerequisiteDocument(path)) return true;
   if (/(^|\/)\.github\/workflows\/.+\.ya?ml$/.test(path)) return true;
   if (/(^|\/)\.gitlab-ci\.ya?ml$/.test(path)) return true;
   if (/(^|\/)(?:LICENSE|COPYING|LICENCE)(?:$|\.)/i.test(path)) return true;
@@ -17155,6 +17156,17 @@ var domain = {
       whyItMatters: "Legally unusable by most companies; pkg.go.dev needs a recognized license.",
       impact: "Consumers cannot adopt the module under standard open-source policy.",
       recommendation: "Add a LICENSE file at the repository root."
+    },
+    {
+      id: "go-project.undocumented-cli-prerequisite",
+      title: "A repository script depends on an undocumented external CLI",
+      category: "maintainability",
+      severity: "low",
+      confidence: "high",
+      summary: (count) => count === 1 ? "A changed repository script requires an external CLI that its prerequisite documentation omits." : `${count} changed repository script dependencies are missing from prerequisite documentation.`,
+      whyItMatters: "Contributors cannot reliably run repository scripts when required nonstandard tools are absent from the setup instructions.",
+      impact: "Local build or generation commands fail until contributors discover and install the missing tool.",
+      recommendation: "List the required CLI in README, CONTRIBUTING, or prerequisite documentation, or vendor the tool behind a repository-relative command."
     }
   ],
   noRiskSummary: "The reviewed project tooling avoids pipe-to-shell, binary commits, and toolchain skew.",
@@ -17206,6 +17218,14 @@ var domain = {
 };
 function isScriptLike(path) {
   return /(^|\/)(?:[Mm]akefile|GNUmakefile|Taskfile\.ya?ml)$/.test(path) || /\.sh$/.test(path) || /(^|\/)tools\/.+\.go$/.test(path);
+}
+function isShellScriptLike(path) {
+  return /(^|\/)(?:[Mm]akefile|GNUmakefile|Taskfile\.ya?ml)$/.test(path) || /\.sh$/.test(path);
+}
+function isPrerequisiteDocument(path) {
+  const name2 = path.split("/").at(-1) ?? path;
+  if (/^(?:README|CONTRIBUTING|PREREQUISITES?)(?:[._-].*)?$/i.test(name2)) return true;
+  return /(^|\/)docs\/.*(?:prereq|getting[-_ ]?started|setup).*(?:\.md|\.rst|\.txt)$/i.test(path);
 }
 function isBinaryPath(path) {
   if (/(^|\/)testdata\//.test(path)) return false;
@@ -17310,6 +17330,58 @@ function licenseMissingSignals(files) {
       data: { module: modulePath }
     }
   ];
+}
+var EXTERNAL_TOOLS = [
+  { command: "jq", documentationPattern: /\bjq\b/i },
+  { command: "node", documentationPattern: /\bnode(?:\.js)?\b/i },
+  { command: "sphinx-build", documentationPattern: /\bsphinx-build\b/i },
+  { command: "wasm-pack", documentationPattern: /\bwasm-pack\b/i }
+];
+function undocumentedExternalCLISignals(files) {
+  const prerequisiteDocuments = files.filter((file) => isPrerequisiteDocument(file.path));
+  const documented = prerequisiteDocuments.map((file) => file.current).join("\n");
+  const signals = [];
+  for (const file of files) {
+    if (file.status === "repository" || !isShellScriptLike(file.path)) continue;
+    const lines = file.current.split("\n");
+    for (const tool of EXTERNAL_TOOLS) {
+      if (tool.documentationPattern.test(documented)) continue;
+      if (scriptExplainsPrerequisite(file.current, tool)) continue;
+      const commandPattern = shellCommandPattern(tool.command);
+      const lineIndex = lines.findIndex((line) => {
+        if (/^\s*#/.test(line)) return false;
+        return commandPattern.test(line.trim());
+      });
+      if (lineIndex === -1) continue;
+      signals.push({
+        ruleId: "go-project.undocumented-cli-prerequisite",
+        path: file.path,
+        line: lineIndex + 1,
+        message: `External CLI ${tool.command} is required here but is not listed in prerequisite documentation.`,
+        snippet: lines[lineIndex].trim().slice(0, 300),
+        data: {
+          tool: tool.command,
+          prerequisiteDocuments: prerequisiteDocuments.map((item) => item.path)
+        }
+      });
+    }
+  }
+  return signals;
+}
+function shellCommandPattern(command) {
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?:^|[|;&(]\\s*|\\$\\(\\s*|\\$\\(\\s*shell\\s+|\\b(?:command|exec|env|sudo|xargs)\\s+)${escaped}(?=\\s|$)`
+  );
+}
+function scriptExplainsPrerequisite(source, tool) {
+  return source.split("\n").some((line) => {
+    if (!tool.documentationPattern.test(line)) return false;
+    if (/^\s*#/.test(line)) {
+      return /\b(?:depend|install|prereq|requir|setup|vendor)/i.test(line);
+    }
+    return /\b(?:depend|install|prereq|required|setup|vendor)(?:ed|s|ing)?\b/i.test(line) && /(?:echo|printf|error|fail)/i.test(line);
+  });
 }
 function parseGoModVersion(source) {
   const toolchain = source.match(/^\s*toolchain\s+go(\d+\.\d+(?:\.\d+)?)\s*$/m);
@@ -21359,7 +21431,11 @@ async function analyzeDiscovery(discovery) {
       parseErrors.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
     }
   }
-  for (const signal of [...ciToolchainSkewSignals(discovery.files), ...licenseMissingSignals(discovery.files)]) {
+  for (const signal of [
+    ...ciToolchainSkewSignals(discovery.files),
+    ...licenseMissingSignals(discovery.files),
+    ...undocumentedExternalCLISignals(discovery.files)
+  ]) {
     const file = discovery.files.find((item) => item.path === signal.path);
     if (file === void 0) continue;
     if (changed(file, signal.line, signal.endLine)) signals.push(signal);
@@ -21401,6 +21477,23 @@ async function discoverSources(ctx) {
     changedLines: /* @__PURE__ */ new Set(),
     status: source.status === "repository" ? "repository" : "added"
   }));
+  if (!wholeTarget) {
+    const seen = new Set(files.map((file) => file.path));
+    const prerequisiteSources = await loadInScopeSources(ctx.repoPath, null, {
+      include: isPrerequisiteDocument,
+      limit: 100,
+      maxBytes: MAX_FILE_BYTES
+    });
+    for (const source of prerequisiteSources) {
+      if (seen.has(source.path)) continue;
+      files.push({
+        path: source.path,
+        current: source.content,
+        changedLines: /* @__PURE__ */ new Set(),
+        status: "repository"
+      });
+    }
+  }
   return {
     mode: wholeTarget ? "repository" : "diff",
     ...ctx.change?.baseRef === void 0 ? {} : { base: ctx.change.baseRef },
@@ -21555,7 +21648,7 @@ function createApp() {
     ctx.summary.files_scanned = analysis.filesScanned;
     ctx.review.observe({
       key: domain.observationKey,
-      summary: analysis.mode === "diff" ? `Prepared ${analysis.filesScanned} changed ${domain.sourceDescription} files against ${analysis.base}.` : `Prepared ${analysis.filesScanned} ${domain.sourceDescription} files in repository review mode.`,
+      summary: analysis.mode === "diff" ? `Prepared ${analysis.filesScanned} relevant ${domain.sourceDescription} files for changed review against ${analysis.base}.` : `Prepared ${analysis.filesScanned} ${domain.sourceDescription} files in repository review mode.`,
       metadata: { parser: "tree-sitter-go", mode: analysis.mode, parseErrors: analysis.parseErrors }
     });
     await reviewDomain(ctx, analysis);

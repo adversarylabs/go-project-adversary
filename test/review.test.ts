@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { type ReviewResult } from "@adversarylabs/sdk";
-import { domain } from "../src/domain.ts";
+import { domain, undocumentedExternalCLISignals } from "../src/domain.ts";
 import { createApp } from "../src/index.ts";
 import { type SourceRevision } from "../src/types.ts";
 
@@ -76,12 +76,68 @@ test("accepts immutable and repository-local go install targets", () => {
   );
 });
 
+test("flags an external CLI omitted from contributor prerequisites", async () => {
+  const fixture = join(projectRoot, "fixtures", "regressions", "undocumented-cli");
+  const signals = undocumentedExternalCLISignals([
+    source("scripts/generate.sh", await readFile(join(fixture, "generate.sh"), "utf8")),
+    source(
+      "CONTRIBUTING.md",
+      await readFile(join(fixture, "CONTRIBUTING.md"), "utf8"),
+      "repository",
+    ),
+  ]);
+
+  assert.deepEqual(
+    signals.map((signal) => ({ ruleId: signal.ruleId, line: signal.line, tool: signal.data.tool })),
+    [{ ruleId: "go-project.undocumented-cli-prerequisite", line: 4, tool: "jq" }],
+  );
+});
+
+test("stays quiet when the external CLI is documented", async () => {
+  const fixture = join(projectRoot, "fixtures", "regressions", "documented-cli");
+  assert.deepEqual(undocumentedExternalCLISignals([
+    source("scripts/generate.sh", await readFile(join(fixture, "generate.sh"), "utf8")),
+    source(
+      "CONTRIBUTING.md",
+      await readFile(join(fixture, "CONTRIBUTING.md"), "utf8"),
+      "repository",
+    ),
+  ]), []);
+});
+
+test("stays quiet for POSIX and repository-relative commands", async () => {
+  const fixture = join(projectRoot, "fixtures", "regressions", "local-commands");
+  assert.deepEqual(undocumentedExternalCLISignals([
+    source("scripts/generate.sh", await readFile(join(fixture, "generate.sh"), "utf8")),
+  ]), []);
+});
+
+test("stays quiet when the changed script explains its prerequisite", () => {
+  assert.deepEqual(undocumentedExternalCLISignals([
+    source("scripts/generate.sh", [
+      "#!/bin/sh",
+      "# Requires jq; install it before running this generator.",
+      "jq -r '.version' package.json",
+    ].join("\n")),
+  ]), []);
+});
+
+test("repository context scripts do not become change findings", () => {
+  assert.deepEqual(undocumentedExternalCLISignals([
+    source("scripts/generate.sh", "jq -r '.version' package.json", "repository"),
+  ]), []);
+});
+
 async function isolatedFixture(fixture: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "go-domain-fixture-"));
   await cp(fixture, root, { recursive: true });
   return root;
 }
 
-function source(path: string, current: string): SourceRevision {
-  return { path, current, changedLines: new Set(), status: "added" };
+function source(
+  path: string,
+  current: string,
+  status: SourceRevision["status"] = "added",
+): SourceRevision {
+  return { path, current, changedLines: new Set(), status };
 }

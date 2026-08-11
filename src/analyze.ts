@@ -1,4 +1,9 @@
-import { ciToolchainSkewSignals, domain, licenseMissingSignals } from "./domain.js";
+import {
+  ciToolchainSkewSignals,
+  domain,
+  licenseMissingSignals,
+  undocumentedExternalCLISignals,
+} from "./domain.js";
 import { parseGo } from "./parser.js";
 import { type Analysis, type Discovery, type PositiveSignal, type Signal, type SourceRevision } from "./types.js";
 
@@ -25,7 +30,11 @@ export async function analyzeDiscovery(discovery: Discovery): Promise<Analysis> 
     }
   }
 
-  for (const signal of [...ciToolchainSkewSignals(discovery.files), ...licenseMissingSignals(discovery.files)]) {
+  for (const signal of [
+    ...ciToolchainSkewSignals(discovery.files),
+    ...licenseMissingSignals(discovery.files),
+    ...undocumentedExternalCLISignals(discovery.files),
+  ]) {
     const file = discovery.files.find((item) => item.path === signal.path);
     if (file === undefined) continue;
     if (changed(file, signal.line, signal.endLine)) signals.push(signal);
