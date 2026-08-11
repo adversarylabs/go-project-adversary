@@ -20,10 +20,21 @@ Public grounding: supply-chain guidance on pipe-to-shell installers, Go toolchai
 | --- | --- |
 | **What** | Makefile / Taskfile / repo script pipes remote content to a shell |
 | **Why** | `curl … | sh` in build tooling executes attacker-controllable content on every dev machine and CI runner — same class as Dockerfile and CI pipe-to-shell |
-| **Looks for** | `curl`/`wget` piped to `sh`/`bash` in `Makefile`, `Taskfile.yml`, `*.sh`, `tools/` scripts; `go install` of tools at `@latest` in bootstrap targets (lower severity variant) |
+| **Looks for** | `curl`/`wget` piped to `sh`/`bash` in `Makefile`, `Taskfile.yml`, `*.sh`, and `tools/` scripts |
 | **Stays quiet when** | Downloads verified against a pinned checksum before execution; tools installed at pinned versions |
 | **Public examples** | Pipe-to-shell criticism is long-settled; the safe download-verify-execute pattern is the contrast |
 | **Remediation** | Download to file, verify sha256, then execute; pin tool versions (`go install tool@v1.2.3`) |
+
+### `go-project.unpinned-go-install`
+
+| | |
+| --- | --- |
+| **What** | Build tooling installs a remote Go tool without an immutable version |
+| **Why** | An omitted version or mutable selector such as `@latest` makes developer and CI tooling drift with upstream |
+| **Looks for** | Remote `go install` targets in Makefiles and scripts with no `@version`, or with `@latest`, `@main`, `@master`, or `@HEAD` |
+| **Stays quiet when** | The target uses a semantic version, pseudo-version, commit, version variable, or repository-local path such as `./cmd/tool` |
+| **Public examples** | Gatekeeper PR #2524 review discussion; Go install version suffix documentation |
+| **Remediation** | Pin the tool to an explicit semantic version, pseudo-version, or commit revision |
 
 ### `go-project.committed-binary`
 

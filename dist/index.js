@@ -17102,6 +17102,17 @@ var domain = {
       recommendation: "Download to a file, verify sha256, then execute; pin tool versions (`go install tool@v1.2.3`)."
     },
     {
+      id: "go-project.unpinned-go-install",
+      title: "Go build tooling installs a mutable remote tool version",
+      category: "security",
+      severity: "high",
+      confidence: "high",
+      summary: (count) => count === 1 ? "A remote Go tool install lacks an immutable version or SHA pin." : `${count} remote Go tool installs lack immutable version or SHA pins.`,
+      whyItMatters: "Unpinned go install commands make developer and CI tooling depend on whatever upstream serves at install time.",
+      impact: "Tool behavior can drift unexpectedly or pick up a compromised upstream revision.",
+      recommendation: "Pin the tool to an explicit semantic version, pseudo-version, or commit revision."
+    },
+    {
       id: "go-project.committed-binary",
       title: "A compiled executable is committed to the repository",
       category: "security",
@@ -17152,14 +17163,7 @@ var domain = {
     const signals = [];
     if (isScriptLike(file.path)) {
       signals.push(...curlBashSignals(file));
-      signals.push(
-        ...lineSignals(
-          file,
-          "go-project.script-curl-bash",
-          /\bgo\s+install\b[^\n]*@latest\b/,
-          () => "Tool bootstrap installs at @latest instead of a pinned version."
-        )
-      );
+      signals.push(...unpinnedGoInstallSignals(file));
     }
     if (isBinaryPath(file.path)) {
       signals.push({
@@ -17218,6 +17222,37 @@ function curlBashSignals(file) {
     /(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b/,
     () => "Remote content is piped directly into a shell."
   );
+}
+function unpinnedGoInstallSignals(file) {
+  const signals = [];
+  file.current.split("\n").forEach((line, index) => {
+    const command = line.match(/\bgo\s+install\b([^#;&|]*)/);
+    if (command?.[1] === void 0) return;
+    const modules = command[1].trim().split(/\s+/).map((token) => token.replace(/^["']|["'\\]+$/g, "")).filter((token) => token !== "" && !token.startsWith("-"));
+    for (const module2 of modules) {
+      if (!isRemoteModule(module2)) continue;
+      const separator = module2.lastIndexOf("@");
+      const selector = separator === -1 ? "" : module2.slice(separator + 1).toLowerCase();
+      if (separator !== -1 && !["latest", "main", "master", "head"].includes(selector)) {
+        continue;
+      }
+      signals.push({
+        ruleId: "go-project.unpinned-go-install",
+        path: file.path,
+        line: index + 1,
+        message: separator === -1 ? `Remote Go tool ${module2} is installed without a version pin.` : `Remote Go tool ${module2} uses the mutable @${selector} selector.`,
+        snippet: line.trim().slice(0, 300),
+        data: { module: module2, selector: selector || "missing" }
+      });
+    }
+  });
+  return signals;
+}
+function isRemoteModule(module2) {
+  if (/^(?:\.{0,2}\/|\/)/.test(module2)) return false;
+  const path = module2.includes("@") ? module2.slice(0, module2.lastIndexOf("@")) : module2;
+  const firstSegment = path.split("/")[0] ?? "";
+  return firstSegment.includes(".");
 }
 function ciToolchainSkewSignals(files) {
   const goMod = files.find((f) => /(^|\/)go\.mod$/.test(f.path));
