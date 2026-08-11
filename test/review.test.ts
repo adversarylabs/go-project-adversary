@@ -140,10 +140,10 @@ test("flags a mockery verifier that cannot expose stale generated files", async 
     "stale-mockery-verifier",
     "verify-mocksgen.sh",
   );
-  const signals = staleMockeryVerificationSignals(source(
+  const signals = domain.analyze(source(
     "hack/verify-mocksgen.sh",
     await readFile(path, "utf8"),
-  ));
+  )).signals.filter((signal) => signal.ruleId === "go-project.stale-mockery-verification");
 
   assert.deepEqual(
     signals.map((signal) => ({ ruleId: signal.ruleId, line: signal.line, generator: signal.data.generator })),
