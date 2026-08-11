@@ -22,7 +22,7 @@ export function createApp(): Adversary {
     ctx.review.observe({
       key: domain.observationKey,
       summary: analysis.mode === "diff"
-        ? `Prepared ${analysis.filesScanned} changed ${domain.sourceDescription} files against ${analysis.base}.`
+        ? `Prepared ${analysis.filesScanned} relevant ${domain.sourceDescription} files for changed review against ${analysis.base}.`
         : `Prepared ${analysis.filesScanned} ${domain.sourceDescription} files in repository review mode.`,
       metadata: { parser: "tree-sitter-go", mode: analysis.mode, parseErrors: analysis.parseErrors },
     });
