@@ -14,6 +14,7 @@ Review Go repository hygiene: scripts, documented external tool prerequisites, b
 
 - Pipe-to-shell install scripts
 - Changed scripts that require a known nonstandard CLI omitted from contributor setup documentation
+- Mockery generated-file verifiers that cannot expose stale tracked mocks
 - Committed binaries
 - CI Go toolchain skew
 - Missing license hygiene

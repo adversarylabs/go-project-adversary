@@ -5,7 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { type ReviewResult } from "@adversarylabs/sdk";
-import { domain, undocumentedExternalCLISignals } from "../src/domain.ts";
+import {
+  domain,
+  staleMockeryVerificationSignals,
+  undocumentedExternalCLISignals,
+} from "../src/domain.ts";
 import { createApp } from "../src/index.ts";
 import { type SourceRevision } from "../src/types.ts";
 
@@ -126,6 +130,92 @@ test("repository context scripts do not become change findings", () => {
   assert.deepEqual(undocumentedExternalCLISignals([
     source("scripts/generate.sh", "jq -r '.version' package.json", "repository"),
   ]), []);
+});
+
+test("flags a mockery verifier that cannot expose stale generated files", async () => {
+  const path = join(
+    projectRoot,
+    "fixtures",
+    "regressions",
+    "stale-mockery-verifier",
+    "verify-mocksgen.sh",
+  );
+  const signals = domain.analyze(source(
+    "hack/verify-mocksgen.sh",
+    await readFile(path, "utf8"),
+  )).signals.filter((signal) => signal.ruleId === "go-project.stale-mockery-verification");
+
+  assert.deepEqual(
+    signals.map((signal) => ({ ruleId: signal.ruleId, line: signal.line, generator: signal.data.generator })),
+    [{ ruleId: "go-project.stale-mockery-verification", line: 8, generator: "mockery" }],
+  );
+});
+
+test("accepts marker-scoped cleanup before mockery regeneration", async () => {
+  const path = join(
+    projectRoot,
+    "fixtures",
+    "regressions",
+    "clean-mockery-verifier",
+    "verify-mocksgen.sh",
+  );
+  assert.deepEqual(staleMockeryVerificationSignals(source(
+    "hack/verify-mocksgen.sh",
+    await readFile(path, "utf8"),
+  )), []);
+});
+
+test("accepts an explicit cleanup target delegated before mocksgen", async () => {
+  const path = join(
+    projectRoot,
+    "fixtures",
+    "regressions",
+    "delegated-mockery-cleanup",
+    "check-generated-mocks.sh",
+  );
+  assert.deepEqual(staleMockeryVerificationSignals(source(
+    "hack/check-generated-mocks.sh",
+    await readFile(path, "utf8"),
+  )), []);
+});
+
+test("ignores generated-code verifiers for other generators", async () => {
+  const path = join(
+    projectRoot,
+    "fixtures",
+    "regressions",
+    "unrelated-generated-verifier",
+    "verify-protobuf.sh",
+  );
+  assert.deepEqual(staleMockeryVerificationSignals(source(
+    "hack/verify-protobuf.sh",
+    await readFile(path, "utf8"),
+  )), []);
+});
+
+test("ignores mockery use outside a generated-output verifier", async () => {
+  const path = join(
+    projectRoot,
+    "fixtures",
+    "regressions",
+    "unrelated-mockery-script",
+    "install-mockery.sh",
+  );
+  assert.deepEqual(staleMockeryVerificationSignals(source(
+    "hack/install-mockery.sh",
+    await readFile(path, "utf8"),
+  )), []);
+});
+
+test("ignores instructions that only mention make mocksgen", () => {
+  assert.deepEqual(staleMockeryVerificationSignals(source(
+    "hack/verify-mocksgen.sh",
+    [
+      "#!/usr/bin/env bash",
+      "echo 'Run make mocksgen if generated mocks are stale'",
+      "git status --short",
+    ].join("\n"),
+  )), []);
 });
 
 async function isolatedFixture(fixture: string): Promise<string> {

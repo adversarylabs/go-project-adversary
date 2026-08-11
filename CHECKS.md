@@ -62,6 +62,17 @@ Public grounding: supply-chain guidance on pipe-to-shell installers, Go toolchai
 
 ## Medium
 
+### `go-project.stale-mockery-verification`
+
+| | |
+| --- | --- |
+| **What** | A changed mockery verification script regenerates and checks git without first removing tracked generated mocks |
+| **Why** | A generator cannot modify a file it no longer knows about, so stale mocks survive while the verification gate passes |
+| **Looks for** | Mockery/mocksgen verifier scripts that inspect git status or diff after regeneration but lack marker-scoped cleanup |
+| **Stays quiet when** | Tracked files carrying the mockery generated-code marker are removed before regeneration; cleanup is an explicit delegated target; another generator is being verified |
+| **Public examples** | OVN-Kubernetes PR #6775 maintainer review and accepted fix |
+| **Remediation** | Remove only tracked files carrying the mockery generated-code marker, regenerate, then inspect git so stale files appear as deletions |
+
 ### `go-project.vet-race-not-in-ci`
 
 | | |
