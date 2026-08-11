@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { type ReviewResult } from "@adversarylabs/sdk";
+import { domain } from "../src/domain.ts";
 import { createApp } from "../src/index.ts";
+import { type SourceRevision } from "../src/types.ts";
 
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -40,8 +42,46 @@ test("review output is deterministic", async () => {
   assert.deepEqual(await review(root), await review(root));
 });
 
+test("flags mutable remote go install targets", () => {
+  const file = source("Makefile", [
+    "tools:",
+    "\tGOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest",
+    "\tgo install golang.org/x/tools/cmd/stringer@latest",
+    "\tgo install github.com/example/tool@main",
+  ].join("\n"));
+
+  const signals = domain.analyze(file).signals.filter(
+    (signal) => signal.ruleId === "go-project.unpinned-go-install",
+  );
+
+  assert.deepEqual(signals.map((signal) => signal.line), [2, 3, 4]);
+});
+
+test("accepts immutable and repository-local go install targets", () => {
+  const file = source("tools/bootstrap.sh", [
+    "go install github.com/example/tool@v1.4.0",
+    "go install github.com/example/tool@v0.0.0-20230118154835-9241bceb3098",
+    "go install github.com/example/tool@9241bceb3098",
+    "go install github.com/example/tool@${TOOL_VERSION}",
+    "go install ./cmd/mytool",
+    "go install ../shared/cmd/tool",
+    "go install std",
+  ].join("\n"));
+
+  assert.equal(
+    domain.analyze(file).signals.some(
+      (signal) => signal.ruleId === "go-project.unpinned-go-install",
+    ),
+    false,
+  );
+});
+
 async function isolatedFixture(fixture: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "go-domain-fixture-"));
   await cp(fixture, root, { recursive: true });
   return root;
+}
+
+function source(path: string, current: string): SourceRevision {
+  return { path, current, changedLines: new Set(), status: "added" };
 }
