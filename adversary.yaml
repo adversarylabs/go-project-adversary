@@ -1,5 +1,5 @@
 name: go/project
-version: 0.0.7
+version: 0.0.8
 description: "Reviews Go repository hygiene: build-script prerequisites, pipe-to-shell scripts, committed binaries, CI toolchain skew, and license presence."
 
 triggers:
