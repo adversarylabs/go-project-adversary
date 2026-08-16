@@ -1,17 +1,21 @@
 # Go Project adversary
 
-Go Project reviews repository-level package boundaries, ownership, dependency direction, and maintainability without prescribing one canonical layout.
+Reviews Go repository hygiene: build-script prerequisites, pipe-to-shell scripts, committed binaries, CI toolchain skew, and license presence.
 
-The initial review focuses on exported mutable package state, implicit `init` lifecycle, and catch-all packages that obscure domain ownership.
+## Goals
 
-## Fixtures and calibration
+The adversary is designed to produce a small number of high-confidence,
+actionable findings grounded in concrete repository evidence. Its review should
+be deterministic where possible, explicit about impact, and quiet when the
+available evidence does not justify a finding.
 
-Five graded fixtures own expected review snapshots. The 61-repository corpus spans project layouts and package-boundary tradeoffs.
+## Scope
 
-## Automatic detection
+It evaluates Go repository structure and automation for toolchain alignment, generated artifacts, large files, licensing, scripts, tooling pins, and CI validation.
 
-`adversary auto` selects Go Project for Go source or module/workspace changes. Full semantic change scoping will use runtime package-graph capabilities when available.
+The complete detector or review inventory is maintained in
+[CHECKS.md](CHECKS.md).
 
-## Development
+## Boundaries
 
-Run `npm test`, `adversary validate .`, and `adversary pack --check .`.
+It owns only this Go specialty. Other Go concerns remain with the corresponding `go/*` adversaries, and it does not execute or modify the target repository.
