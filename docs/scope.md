@@ -8,13 +8,14 @@ Source of truth for what this adversary is *for*.
 
 ## Mission
 
-Review Go repository hygiene: scripts, documented external tool prerequisites, binaries, CI toolchain skew, and licenses.
+Review Go repository hygiene: shell-harness service readiness, scripts, documented external tool prerequisites, binaries, CI toolchain skew, and licenses.
 
 ## In scope (fair miss if humans raised it and we did not)
 
 - Pipe-to-shell install scripts
 - Changed scripts that require a known nonstandard CLI omitted from contributor setup documentation
 - Mockery generated-file verifiers that cannot expose stale tracked mocks
+- Changed shell harnesses that start Docker and reach daemon operations without a proven readiness gate
 - Committed binaries
 - CI Go toolchain skew
 - Missing license hygiene

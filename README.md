@@ -1,6 +1,6 @@
 # Go Project adversary
 
-Reviews Go repository hygiene: build-script prerequisites, pipe-to-shell scripts, committed binaries, CI toolchain skew, and license presence.
+Reviews Go repository hygiene: shell-harness readiness, build-script prerequisites, pipe-to-shell scripts, committed binaries, CI toolchain skew, and license presence.
 
 ## Goals
 
@@ -11,7 +11,7 @@ available evidence does not justify a finding.
 
 ## Scope
 
-It evaluates Go repository structure and automation for toolchain alignment, generated artifacts, large files, licensing, scripts, tooling pins, and CI validation.
+It evaluates Go repository structure and automation for service readiness in shell harnesses, toolchain alignment, generated artifacts, licensing, scripts, tooling pins, and CI validation.
 
 The complete detector or review inventory is maintained in
 [CHECKS.md](CHECKS.md).
