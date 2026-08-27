@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,22 +16,59 @@ test("the published runtime executes without node_modules", async () => {
   const entrypoint = join(artifact, "dist", "index.js");
   const input = join(artifact, "input.json");
   const output = join(artifact, "output.json");
+  const archive = join(artifact, "package.tar");
 
-  await mkdir(dirname(entrypoint), { recursive: true });
-  await mkdir(join(artifact, "schemas"), { recursive: true });
-  await copyFile(join(projectRoot, "dist", "index.js"), entrypoint);
-  await copyFile(join(projectRoot, "dist", "web-tree-sitter.wasm"), join(artifact, "dist", "web-tree-sitter.wasm"));
-  await copyFile(join(projectRoot, "dist", "tree-sitter-go.wasm"), join(artifact, "dist", "tree-sitter-go.wasm"));
-  await copyFile(
-    join(projectRoot, "schemas", "adversary.review.v1.schema.json"),
-    join(artifact, "schemas", "adversary.review.v1.schema.json"),
-  );
-  await writeFile(join(artifact, "package.json"), '{"type":"module"}\n');
+  const ignored = (await readFile(join(projectRoot, ".adversaryignore"), "utf8"))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert.ok(ignored.includes(".git"));
+  assert.ok(ignored.includes("node_modules/"));
+  assert.ok(ignored.includes("docs/train-drafts/"));
+
+  for (const path of ["dist/index.js", "dist/web-tree-sitter.wasm", "dist/tree-sitter-go.wasm"]) {
+    await execute("git", ["ls-files", "--error-unmatch", path], { cwd: projectRoot });
+  }
+  await execute("git", [
+    "archive",
+    "--format=tar",
+    `--output=${archive}`,
+    "HEAD",
+    "dist/index.js",
+    "dist/web-tree-sitter.wasm",
+    "dist/tree-sitter-go.wasm",
+    "schemas/adversary.review.v1.schema.json",
+    "THIRD_PARTY_NOTICES.md",
+    "package.json",
+  ], { cwd: projectRoot });
+  await execute("tar", ["-xf", archive, "-C", artifact]);
   await writeFile(join(repository, "main.go"), "package sample\n\nfunc ready() bool { return true }\n");
+  await writeFile(join(repository, "restart.sh"), [
+    "#!/bin/sh",
+    "main() {",
+    "  systemctl start docker",
+    "  docker ps",
+    "}",
+    "main",
+    "",
+  ].join("\n"));
   await writeFile(input, `${JSON.stringify({ source: { path: repository } })}\n`);
 
   const bundle = await readFile(entrypoint, "utf8");
   assert.doesNotMatch(bundle, /from\s+["'](?:@adversarylabs\/sdk|web-tree-sitter)["']/);
+  const notices = await readFile(join(artifact, "THIRD_PARTY_NOTICES.md"), "utf8");
+  assert.deepEqual([...notices.matchAll(/^## (.+?) \(/gm)].map((match) => match[1]), [
+    "@adversarylabs/sdk",
+    "ajv",
+    "fast-deep-equal",
+    "fast-uri",
+    "json-schema-traverse",
+    "tree-sitter-go",
+    "web-tree-sitter",
+    "yaml",
+  ]);
+  assert.match(notices, /Permission is hereby granted/);
+  assert.match(notices, /Redistribution and use in source and binary forms/);
 
   await execute(process.execPath, [entrypoint], {
     cwd: artifact,
@@ -46,6 +83,8 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/project");
-  assert.equal(envelope.result.adversary.version, "0.0.9");
-  assert.deepEqual(envelope.result.findings, []);
+  assert.equal(envelope.result.adversary.version, "0.0.11");
+  assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
+    "go-project.docker-start-without-readiness",
+  ]);
 });

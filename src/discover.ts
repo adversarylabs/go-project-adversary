@@ -39,8 +39,7 @@ export async function discoverSources(ctx: RuleContext): Promise<Discovery> {
     files.push({
       path: source.path,
       current: source.content,
-      changedLines: change.changedLines,
-      status: change.status,
+      ...change,
     });
   }
 
@@ -72,7 +71,7 @@ export async function discoverSources(ctx: RuleContext): Promise<Discovery> {
 async function changedSource(
   ctx: RuleContext,
   path: string,
-): Promise<Pick<SourceRevision, "changedLines" | "status">> {
+): Promise<Pick<SourceRevision, "changedLines" | "status" | "previous">> {
   const base = ctx.change?.baseRef;
   if (base === undefined || !(await existsAtRevision(ctx.repoPath, base, path))) {
     return { changedLines: new Set<number>(), status: "added" };
@@ -83,7 +82,8 @@ async function changedSource(
   if (head !== undefined && !ctx.change?.worktree) args.push(head);
   args.push("--", path);
   const patch = await gitOutput(ctx.repoPath, args);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  const previous = await gitOutput(ctx.repoPath, ["show", `${base}:${path}`]);
+  return { changedLines: changedLineNumbers(patch), status: "modified", previous };
 }
 
 async function existsAtRevision(repoPath: string, revision: string, path: string): Promise<boolean> {

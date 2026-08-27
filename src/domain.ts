@@ -1,4 +1,5 @@
 import { lineSignals, positive } from "./signals.js";
+import { dockerDaemonReadinessSignals } from "./docker-readiness.js";
 import { type DomainDefinition, type Signal, type SourceRevision } from "./types.js";
 
 /** Repository hygiene paths for Go project integrity review. */
@@ -102,6 +103,22 @@ export const domain: DomainDefinition = {
         "Remove only tracked files carrying the mockery generated-code marker before regeneration, then inspect git status or diff so stale outputs appear as deletions.",
     },
     {
+      id: "go-project.docker-start-without-readiness",
+      title: "A shell harness uses Docker before the daemon is ready",
+      category: "reliability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) =>
+        count === 1
+          ? "A shell harness starts Docker and reaches a daemon operation without a readiness gate."
+          : `${count} Docker start/use relationships lack readiness gates.`,
+      whyItMatters:
+        "Starting the service and immediately invoking the Docker client races daemon initialization.",
+      impact: "Integration and bootstrap scripts fail intermittently after service or host startup.",
+      recommendation:
+        "Before the first dependent Docker operation, use a bounded readiness probe such as retrying `docker info` and fail when the timeout expires.",
+    },
+    {
       id: "go-project.editor-junk",
       title: "Editor or OS junk is tracked in the repository",
       category: "maintainability",
@@ -153,6 +170,7 @@ export const domain: DomainDefinition = {
       signals.push(...curlBashSignals(file));
       signals.push(...unpinnedGoInstallSignals(file));
       signals.push(...staleMockeryVerificationSignals(file));
+      signals.push(...dockerDaemonReadinessSignals(file));
     }
     if (isBinaryPath(file.path)) {
       signals.push({

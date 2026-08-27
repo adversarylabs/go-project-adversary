@@ -21,6 +21,7 @@ test("an unrelated edit does not surface a legacy stale-mockery finding", async 
   const discovery = await discoverSources(changedContext(repo, [path]));
   assert.equal(discovery.files[0]?.status, "modified");
   assert.deepEqual([...discovery.files[0]!.changedLines], [6]);
+  assert.equal(discovery.files[0]?.previous, verifierSource("old diagnostic"));
 
   const analysis = await analyzeDiscovery(discovery);
   assert.deepEqual(analysis.signals.filter((signal) => signal.ruleId === ruleId), []);

@@ -17065,6 +17065,609 @@ function positive(file, key, pattern, summary) {
   return result;
 }
 
+// src/docker-readiness.ts
+var RULE_ID = "go-project.docker-start-without-readiness";
+var DOCKER_DAEMON_OPERATIONS = /* @__PURE__ */ new Set([
+  "attach",
+  "build",
+  "commit",
+  "compose",
+  "create",
+  "events",
+  "exec",
+  "export",
+  "images",
+  "import",
+  "inspect",
+  "kill",
+  "load",
+  "logs",
+  "network",
+  "pause",
+  "plugin",
+  "ps",
+  "pull",
+  "push",
+  "rename",
+  "restart",
+  "rm",
+  "rmi",
+  "run",
+  "save",
+  "start",
+  "stats",
+  "stop",
+  "system",
+  "top",
+  "unpause",
+  "update",
+  "volume",
+  "wait"
+]);
+function dockerDaemonReadinessSignals(file) {
+  if (!/\.sh$/.test(file.path)) return [];
+  const current = unsafeRelationships(file.current);
+  if (current.length === 0) return [];
+  const previousCounts = /* @__PURE__ */ new Map();
+  if (file.previous !== void 0) {
+    for (const relationship of unsafeRelationships(file.previous)) {
+      const key = relationshipKey(relationship);
+      previousCounts.set(key, (previousCounts.get(key) ?? 0) + 1);
+    }
+  }
+  const signals = [];
+  for (const relationship of current) {
+    if (file.status === "modified") {
+      const key = relationshipKey(relationship);
+      const previousCount = previousCounts.get(key) ?? 0;
+      if (previousCount > 0) {
+        previousCounts.set(key, previousCount - 1);
+        continue;
+      }
+    }
+    const anchor = semanticAnchor(file, relationship);
+    if (anchor === void 0) continue;
+    signals.push({
+      ruleId: RULE_ID,
+      path: file.path,
+      line: anchor,
+      message: `Docker is started and then used for \`${relationship.operation}\` without a proven readiness gate.`,
+      snippet: lineAt(file.current, anchor).trim().slice(0, 300),
+      data: {
+        service: "docker",
+        operation: relationship.operation,
+        startLine: relationship.startLine,
+        useLine: relationship.useLine,
+        scope: relationship.scope
+      }
+    });
+  }
+  return signals;
+}
+function unsafeRelationships(source) {
+  const scopes = shellScopes(source);
+  const invoked = invokedScopes(scopes);
+  const dockerAlias = hasDockerOciAlias(source);
+  const scopeCounts = /* @__PURE__ */ new Map();
+  for (const scope of scopes) {
+    if (scope.name !== "<top-level>") scopeCounts.set(scope.name, (scopeCounts.get(scope.name) ?? 0) + 1);
+  }
+  const readinessHelpers = new Set(
+    scopes.filter((scope) => scope.name !== "<top-level>" && scopeCounts.get(scope.name) === 1 && provesBoundedReadiness(scope.lines, dockerAlias, 0, true)).map((scope) => scope.name)
+  );
+  const relationships = [];
+  for (const scope of scopes) {
+    if (scope.name !== "<top-level>" && !invoked.has(scope.name)) continue;
+    const depths = controlDepths(scope.lines);
+    const dead = staticallyDeadLines(scope.lines);
+    for (let index = 0; index < scope.lines.length; index += 1) {
+      const start2 = scope.lines[index];
+      const startText = activeShell(start2.text);
+      if (dead.has(index) || !startsDocker(startText)) continue;
+      const startDepth = depths[index] ?? 0;
+      const startOpensControl = opensControl(startText);
+      const errexit = errexitEnabled(source, scope, index);
+      let leftStartControl = false;
+      const sameLine = sameLineOutcome(startText, dockerAlias, errexit);
+      if (sameLine.kind === "ready") continue;
+      if (sameLine.kind === "use") {
+        relationships.push({
+          scope: scope.name,
+          startLine: start2.line,
+          useLine: start2.line,
+          startText: normalizeSemanticLine(startText),
+          useText: normalizeSemanticLine(sameLine.text),
+          operation: sameLine.operation
+        });
+        continue;
+      }
+      for (let candidate = index + 1; candidate < scope.lines.length; candidate += 1) {
+        const use = scope.lines[candidate];
+        const useText = activeShell(use.text);
+        if (dead.has(candidate)) continue;
+        if ((depths[candidate] ?? 0) < startDepth) leftStartControl = true;
+        if (isDockerAliasReassignment(useText)) break;
+        if (isUnconditionalTerminator(useText) && ((depths[candidate] ?? 0) === 0 || !startOpensControl && !leftStartControl && (depths[candidate] ?? 0) === startDepth)) break;
+        if (isReadinessGate(
+          scope.lines,
+          index,
+          candidate,
+          dockerAlias,
+          depths,
+          startDepth,
+          readinessHelpers,
+          errexit
+        )) break;
+        const operation = dockerDaemonOperation(useText, dockerAlias);
+        if (operation === void 0) continue;
+        relationships.push({
+          scope: scope.name,
+          startLine: start2.line,
+          useLine: use.line,
+          startText: normalizeSemanticLine(startText),
+          useText: normalizeSemanticLine(useText),
+          operation
+        });
+        break;
+      }
+    }
+  }
+  return relationships;
+}
+function shellScopes(source) {
+  const lines = semanticShellLines(source.split("\n"));
+  const functions = [];
+  const covered = /* @__PURE__ */ new Set();
+  for (let index = 0; index < lines.length; index += 1) {
+    const declaration = activeShell(lines[index]).match(
+      /^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\s*\))?\s*\{/
+    );
+    if (declaration?.[1] === void 0) continue;
+    let depth = braceDelta(lines[index]);
+    let end = index;
+    while (depth > 0 && end + 1 < lines.length) {
+      end += 1;
+      depth += braceDelta(lines[end]);
+    }
+    const scopedLines = [];
+    const openingTail = activeShell(lines[index]).replace(
+      /^\s*(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\))?\s*\{\s*/,
+      ""
+    );
+    const oneLineBody = depth === 0 ? openingTail.replace(/}\s*$/, "") : openingTail;
+    if (oneLineBody.trim() !== "") scopedLines.push({ line: index + 1, text: oneLineBody });
+    for (let lineIndex = index + 1; lineIndex < end; lineIndex += 1) {
+      covered.add(lineIndex);
+      scopedLines.push({ line: lineIndex + 1, text: lines[lineIndex] });
+    }
+    if (end > index) {
+      const closingHead = activeShell(lines[end]).replace(/}\s*$/, "");
+      if (closingHead.trim() !== "") scopedLines.push({ line: end + 1, text: closingHead });
+    }
+    covered.add(index);
+    covered.add(end);
+    functions.push({
+      name: declaration[1],
+      startLine: index + 1,
+      endLine: end + 1,
+      lines: scopedLines
+    });
+    index = end;
+  }
+  const topLevelLines = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!covered.has(index)) topLevelLines.push({ line: index + 1, text: lines[index] });
+  }
+  return [{
+    name: "<top-level>",
+    startLine: 1,
+    endLine: lines.length,
+    lines: topLevelLines
+  }, ...functions];
+}
+function invokedScopes(scopes) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const scope of scopes) {
+    if (scope.name === "<top-level>") continue;
+    counts.set(scope.name, (counts.get(scope.name) ?? 0) + 1);
+  }
+  const functions = new Set(
+    [...counts].filter(([, count]) => count === 1).map(([name2]) => name2)
+  );
+  const invoked = /* @__PURE__ */ new Set();
+  const topLevel = scopes.find((scope) => scope.name === "<top-level>");
+  if (topLevel !== void 0) collectInvocations(topLevel, functions, invoked);
+  let changed2 = true;
+  while (changed2) {
+    changed2 = false;
+    for (const scope of scopes) {
+      if (!invoked.has(scope.name)) continue;
+      const before = invoked.size;
+      collectInvocations(scope, functions, invoked);
+      if (invoked.size !== before) changed2 = true;
+    }
+  }
+  return invoked;
+}
+function collectInvocations(scope, functions, invoked) {
+  const dead = staticallyDeadLines(scope.lines);
+  for (let index = 0; index < scope.lines.length; index += 1) {
+    if (dead.has(index)) continue;
+    const { text } = scope.lines[index];
+    const active = activeShell(text);
+    for (const name2 of functions) {
+      const escaped = name2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const call = new RegExp(
+        `(?:^|[;&|()]|\\b(?:then|do)\\b)\\s*(?:if\\s+!?\\s*)?${escaped}(?=\\s|[;&|)]|$)`
+      );
+      const trap = new RegExp(
+        `(?:^|[;&|()]|\\b(?:then|do)\\b)\\s*trap\\s+(?:--\\s+)?["']?${escaped}["']?(?=\\s|[;&|)]|$)`
+      );
+      if (call.test(active) || trap.test(active)) invoked.add(name2);
+    }
+  }
+}
+function startsDocker(line) {
+  return dockerStartMatch(line) !== void 0;
+}
+function dockerStartMatch(line) {
+  return line.match(/(?:^|[;&|()]|\b(?:then|do)\b)\s*(?:if\s+!?\s*)?(?:sudo\s+)?systemctl\s+(?:--[^\s]+\s+)*start\s+docker(?:\.service)?(?=\s|[;&|)]|$)/) ?? void 0;
+}
+function sameLineOutcome(line, dockerAlias, errexit) {
+  const start2 = dockerStartMatch(line);
+  if (start2?.index === void 0) return { kind: "none" };
+  const tail = line.slice(start2.index + start2[0].length);
+  const normalized = normalizeDockerAlias(tail, dockerAlias);
+  const readiness = directReadinessIndex(normalized, errexit);
+  const use = dockerDaemonCommand(normalized);
+  if (use !== void 0 && (readiness === -1 || use.index < readiness)) {
+    return { kind: "use", operation: use.operation, text: normalized.slice(use.index) };
+  }
+  if (readiness !== -1) return { kind: "ready" };
+  return { kind: "none" };
+}
+function dockerDaemonOperation(line, dockerAlias) {
+  return dockerDaemonCommand(normalizeDockerAlias(line, dockerAlias))?.operation;
+}
+function dockerDaemonCommand(normalized) {
+  const pattern = /(?:^|[;&|()]|\b(?:then|do)\b)\s*(?:if\s+!?\s*)?(?:sudo\s+)?["']?docker["']?\s+([a-z][a-z0-9-]*)\b/g;
+  for (const match of normalized.matchAll(pattern)) {
+    const operation = match[1];
+    if (operation !== void 0 && DOCKER_DAEMON_OPERATIONS.has(operation)) {
+      return { operation, index: match.index };
+    }
+  }
+  return void 0;
+}
+function directReadinessIndex(line, errexit) {
+  const match = /(?:^|[;()]|\b(?:then|do)\b)\s*["']?docker["']?\s+info\b/.exec(line);
+  if (match?.index === void 0) return -1;
+  const prefix = line.slice(0, match.index + match[0].length);
+  if (/(?:^|[;&|()]|\b(?:then|do)\b)\s*(?:if|while|until)\s+!?\s*["']?docker["']?\s+info\b/.test(prefix)) {
+    return -1;
+  }
+  const tail = line.slice(match.index + match[0].length);
+  if (/^[^;]*\|\|\s*(?:true|:)(?:\s|$)/.test(tail)) return -1;
+  if (/^[^;]*\|\|\s*(?:exit|return)\s+[1-9]\d*(?:\s|;|$)/.test(tail)) return match.index;
+  if (/^[^;]*(?:&&|\|\|)/.test(tail) || /(^|[^|])\|([^|]|$)/.test(tail) || /&\s*(?:$|[;)])/.test(tail)) {
+    return -1;
+  }
+  return errexit ? match.index : -1;
+}
+function opensControl(line) {
+  return /^(?:\s*)(?:if\b.*\bthen|(?:while|until|for|select)\b.*\bdo|case\b.*\bin)\b/.test(line);
+}
+function isReadinessGate(lines, startIndex, candidateIndex, dockerAlias, depths, startDepth, readinessHelpers, errexit) {
+  const between = lines.slice(startIndex + 1, candidateIndex);
+  for (let index = 0; index < between.length; index += 1) {
+    const normalized = normalizeDockerAlias(activeShell(between[index].text), dockerAlias);
+    const absoluteIndex = startIndex + 1 + index;
+    const depth = depths[absoluteIndex] ?? 0;
+    if (depth <= startDepth && /\bsystemctl\b[^#\n]*\bis-active\b[^#\n]*\b--wait\b[^#\n]*\bdocker(?:\.service)?\b/.test(normalized)) {
+      return true;
+    }
+    if (depth <= startDepth && directlyCallsAnyFunction(normalized, readinessHelpers)) {
+      return true;
+    }
+    if (!/(?:^|[;&|()]|\b(?:then|do)\b)\s*(?:if\s+!?\s*)?["']?docker["']?\s+info\b/.test(normalized)) {
+      continue;
+    }
+    if (/\|\|\s*(?:true|:)(?:\s|$)/.test(normalized) || /(?:^|\s)&\s*$/.test(normalized)) continue;
+    if (depth <= startDepth && directReadinessIndex(normalized, errexit) !== -1) return true;
+    if (depth <= startDepth && failClosedInfoGate(between, index, dockerAlias)) return true;
+  }
+  const annotated = between.map((line, index) => ({
+    ...line,
+    depth: depths[startIndex + 1 + index] ?? 0
+  }));
+  return provesBoundedReadiness(annotated, dockerAlias, startDepth);
+}
+function provesBoundedReadiness(lines, dockerAlias, maximumDepth = 0, requireProcessExit = false) {
+  const active = lines.map(({ text }) => normalizeDockerAlias(activeShell(text), dockerAlias));
+  for (let infoIndex = 0; infoIndex < active.length; infoIndex += 1) {
+    const info2 = active[infoIndex];
+    if (!/(?:^|[;&|()]|\b(?:then|do)\b)\s*(?:if\s+!?\s*)?["']?docker["']?\s+info\b/.test(info2)) continue;
+    if (/\|\|\s*(?:true|:)(?:\s|$)/.test(info2) || /(?:^|\s)&\s*$/.test(info2)) continue;
+    let loopStart = -1;
+    for (let index = infoIndex - 1; index >= 0; index -= 1) {
+      if (/^\s*(?:while|until)\b.*\bdo\b/.test(active[index])) {
+        loopStart = index;
+        break;
+      }
+    }
+    if (loopStart === -1 || (lines[loopStart].depth ?? 0) > maximumDepth) continue;
+    let loopEnd = -1;
+    for (let index = infoIndex + 1; index < active.length; index += 1) {
+      if (/^\s*done\b/.test(active[index]) && (lines[index].depth ?? 0) === (lines[loopStart].depth ?? 0)) {
+        loopEnd = index;
+        break;
+      }
+    }
+    if (loopEnd === -1) continue;
+    const prefix = active.slice(0, loopStart).join("\n");
+    const bound = prefix.match(/\b([A-Za-z_][A-Za-z0-9_]*(?:timeout|retries|attempts)|(?:timeout|retries|attempts)[A-Za-z0-9_]*)\s*=\s*(?:["']?\$\{[^}]+:-\d+\}["']?|["']?\d+["']?)/i)?.[1];
+    if (bound === void 0) continue;
+    const escaped = bound.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const loopHeader = active[loopStart];
+    if (!new RegExp(`(?:\\$${escaped}\\b|\\$\\{${escaped}\\}|\\b${escaped}\\b)["']?\\s*(?:-gt|>|-ne|!=)\\s*["']?0\\b`).test(loopHeader)) {
+      continue;
+    }
+    if (!readinessSuccessEscapes(active, infoIndex, loopEnd)) continue;
+    const loop = active.slice(loopStart, loopEnd + 1).join("\n");
+    const decrements = new RegExp(
+      `(?:\\(\\(\\s*${escaped}--\\s*\\)\\)|${escaped}\\s*=\\s*\\$\\(\\(\\s*${escaped}\\s*-\\s*1\\s*\\)\\)|\\blet\\s+${escaped}--)`
+    ).test(loop);
+    if (!decrements || !/\bsleep\b/.test(loop)) continue;
+    const suffixLines = active.slice(loopEnd + 1);
+    const suffix = suffixLines.join("\n");
+    const firstExecutableOffset = suffixLines.findIndex((line) => line.trim() !== "");
+    const firstExecutable = firstExecutableOffset === -1 ? "" : suffixLines[firstExecutableOffset];
+    const firstExecutableDepth = firstExecutableOffset === -1 ? Number.POSITIVE_INFINITY : lines[loopEnd + 1 + firstExecutableOffset].depth ?? 0;
+    const failureCommand = requireProcessExit ? "exit" : "(?:exit|return)";
+    const directFailure = firstExecutableDepth <= (lines[loopStart].depth ?? 0) && new RegExp(`^\\s*${failureCommand}\\s+[1-9]\\d*\\s*;?\\s*$`).test(firstExecutable);
+    if (directFailure || new RegExp(`\\b${escaped}\\b[\\s\\S]*\\b${failureCommand}\\s+[1-9]\\d*\\b`).test(suffix)) {
+      return true;
+    }
+  }
+  return false;
+}
+function readinessSuccessEscapes(active, infoIndex, loopEnd) {
+  const info2 = active[infoIndex];
+  if (!/^\s*if\b[^\n]*\bdocker\b[^\n]*\binfo\b[^\n]*\bthen\b/.test(info2)) return false;
+  if (/\bthen\b[^\n]*\b(?:break|return)(?:\s|;|$)/.test(info2)) return true;
+  for (let index = infoIndex + 1; index < loopEnd; index += 1) {
+    const line = active[index].trim();
+    if (/^fi\b/.test(line)) return false;
+    if (/^(?:break|return)(?:\s|;|$)/.test(line)) return true;
+  }
+  return false;
+}
+function failClosedInfoGate(lines, infoIndex, dockerAlias) {
+  const info2 = normalizeDockerAlias(activeShell(lines[infoIndex].text), dockerAlias);
+  if (!/^\s*if\s+!\s+[^\n]*docker[^\n]*info\b/.test(info2)) return false;
+  for (let index = infoIndex; index < lines.length; index += 1) {
+    const active = activeShell(lines[index].text);
+    if (/\b(?:exit|return)\s+[1-9]\d*\b/.test(active)) return true;
+    if (/^\s*fi\b/.test(active) && index > infoIndex) return false;
+  }
+  return false;
+}
+function directlyCallsAnyFunction(line, names) {
+  for (const name2 of names) {
+    const escaped = name2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(
+      `^\\s*${escaped}(?:\\s+[^;&|]*)?\\s*;?\\s*$`
+    ).test(line)) return true;
+  }
+  return false;
+}
+function hasDockerOciAlias(source) {
+  const lines = semanticShellLines(source.split("\n")).map(activeShell);
+  return lines.some((line) => /^\s*(?:readonly\s+)?OCI_BIN\s*=\s*["']?(?:docker|\$\{OCI_BIN:-docker\})["']?\s*$/.test(line)) && !lines.some(isDockerAliasReassignment);
+}
+function errexitEnabled(source, scope, startIndex) {
+  const semantic = semanticShellLines(source.split("\n"));
+  if (semantic.some((line) => /^\s*set\s+\+[A-Za-z]*e[A-Za-z]*(?:\s|$)/.test(activeShell(line)))) return false;
+  const enablesErrexit = (line) => /^\s*set\s+-[A-Za-z]*e[A-Za-z]*(?:\s|$)/.test(activeShell(line));
+  const localDepths = controlDepths(scope.lines);
+  const localDead = staticallyDeadLines(scope.lines);
+  if (scope.lines.slice(0, startIndex).some(({ text }, index) => !localDead.has(index) && (localDepths[index] ?? 0) === 0 && enablesErrexit(text))) return true;
+  const topLevel = shellScopes(source).find((candidate) => candidate.name === "<top-level>");
+  if (topLevel === void 0) return false;
+  const topDepths = controlDepths(topLevel.lines);
+  const topDead = staticallyDeadLines(topLevel.lines);
+  return topLevel.lines.some(({ line, text }, index) => line < scope.startLine && !topDead.has(index) && (topDepths[index] ?? 0) === 0 && enablesErrexit(text));
+}
+function isDockerAliasReassignment(line) {
+  const assignment = line.match(/^\s*(?:readonly\s+|export\s+)?OCI_BIN\s*=\s*(.+?)\s*$/);
+  if (assignment?.[1] === void 0) return false;
+  return !/^["']?(?:docker|\$\{OCI_BIN(?::-[^}]*)?\})["']?$/.test(assignment[1]);
+}
+function isUnconditionalTerminator(line) {
+  return /^\s*(?:return|exit)(?:\s+[^;&|]+)?\s*;?\s*$/.test(line);
+}
+function controlDepths(lines) {
+  const depths = [];
+  let depth = 0;
+  for (const { text } of lines) {
+    const active = activeShell(text).trim();
+    if (/^(?:fi|done|esac)\b/.test(active)) depth = Math.max(0, depth - 1);
+    depths.push(depth);
+    if (/^(?:if\b.*\bthen|(?:while|until|for|select)\b.*\bdo|case\b.*\bin)\b/.test(active) && !/\b(?:fi|done|esac)\b/.test(active)) {
+      depth += 1;
+    }
+  }
+  return depths;
+}
+function staticallyDeadLines(lines) {
+  const dead = /* @__PURE__ */ new Set();
+  const stack = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const active = activeShell(lines[index].text).trim();
+    const inheritedDead = stack.some((entry) => entry.dead);
+    if (/^if\s+(?:\(\s*)?(?:false|\[\s+0\s+-eq\s+1\s+\]|\[\[\s+0\s+-eq\s+1\s+\]\])(?:\s*\))?\s*;?\s*then\b/.test(active)) {
+      if (inheritedDead) dead.add(index);
+      stack.push({ dead: true, kind: "if" });
+      continue;
+    }
+    if (/^(?:while|until)\s+false\s*;?\s*do\b/.test(active)) {
+      if (inheritedDead) dead.add(index);
+      stack.push({ dead: true, kind: "loop" });
+      continue;
+    }
+    if (/^else\b/.test(active) && stack.at(-1)?.kind === "if") {
+      stack[stack.length - 1].dead = !stack[stack.length - 1].dead;
+      if (stack.some((entry) => entry.dead)) dead.add(index);
+      continue;
+    }
+    if (/^fi\b/.test(active) && stack.at(-1)?.kind === "if") {
+      if (inheritedDead) dead.add(index);
+      stack.pop();
+      continue;
+    }
+    if (/^done\b/.test(active) && stack.at(-1)?.kind === "loop") {
+      if (inheritedDead) dead.add(index);
+      stack.pop();
+      continue;
+    }
+    if (inheritedDead) dead.add(index);
+  }
+  return dead;
+}
+function normalizeDockerAlias(line, enabled) {
+  if (!enabled) return line;
+  return line.replace(/["']?\$\{OCI_BIN\}["']?/g, "docker").replace(/["']?\$OCI_BIN["']?/g, "docker");
+}
+function semanticAnchor(file, relationship) {
+  if (file.status !== "modified") return relationship.startLine;
+  if (file.changedLines.has(relationship.startLine)) return relationship.startLine;
+  if (file.changedLines.has(relationship.useLine)) return relationship.useLine;
+  for (let line = relationship.startLine + 1; line < relationship.useLine; line += 1) {
+    if (!file.changedLines.has(line)) continue;
+    const semantic = activeShell(lineAt(file.current, line)).trim();
+    if (semantic !== "" && semantic !== "{" && semantic !== "}") return line;
+  }
+  return void 0;
+}
+function relationshipKey(relationship) {
+  return [relationship.scope, relationship.operation].join("\0");
+}
+function semanticShellLines(lines) {
+  const result = [...lines];
+  let heredoc;
+  let continuedQuote;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (heredoc !== void 0) {
+      const candidate = heredoc.stripTabs ? line.replace(/^\t+/, "") : line;
+      result[index] = "";
+      if (candidate.trimEnd() === heredoc.delimiter) heredoc = void 0;
+      continue;
+    }
+    if (continuedQuote !== void 0) {
+      result[index] = "";
+      if (closesContinuedQuote(line, continuedQuote)) continuedQuote = void 0;
+      continue;
+    }
+    const marker = activeShell(line).match(/<<(-)?\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?/);
+    if (marker?.[2] !== void 0) heredoc = { delimiter: marker[2], stripTabs: marker[1] === "-" };
+    continuedQuote = openQuoteAtEnd(line);
+  }
+  return result;
+}
+function openQuoteAtEnd(line) {
+  let quote;
+  let escaped = false;
+  for (const character of line) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote === void 0 && (character === "'" || character === '"')) quote = character;
+    else if (character === quote) quote = void 0;
+    if (quote === void 0 && character === "#") break;
+  }
+  return quote;
+}
+function closesContinuedQuote(line, quote) {
+  let escaped = false;
+  for (const character of line) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote === '"') {
+      escaped = true;
+      continue;
+    }
+    if (character === quote) return true;
+  }
+  return false;
+}
+function normalizeSemanticLine(line) {
+  return line.trim().replace(/\s+/g, " ").replace(/;\s*(?:then|do)\s*$/, "");
+}
+function lineAt(source, line) {
+  return source.split("\n")[line - 1] ?? "";
+}
+function activeShell(line) {
+  let quote;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== void 0) {
+      if (character === quote) quote = void 0;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) return line.slice(0, index);
+  }
+  return line;
+}
+function braceDelta(line) {
+  const active = activeShell(line);
+  let quote;
+  let escaped = false;
+  let delta = 0;
+  for (let index = 0; index < active.length; index += 1) {
+    const character = active[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== void 0) {
+      if (character === quote) quote = void 0;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (character === "{") delta += 1;
+    if (character === "}") delta -= 1;
+  }
+  return delta;
+}
+
 // src/domain.ts
 function includePath(path) {
   if (path.endsWith(".go")) return true;
@@ -17147,6 +17750,17 @@ var domain = {
       recommendation: "Remove only tracked files carrying the mockery generated-code marker before regeneration, then inspect git status or diff so stale outputs appear as deletions."
     },
     {
+      id: "go-project.docker-start-without-readiness",
+      title: "A shell harness uses Docker before the daemon is ready",
+      category: "reliability",
+      severity: "medium",
+      confidence: "high",
+      summary: (count) => count === 1 ? "A shell harness starts Docker and reaches a daemon operation without a readiness gate." : `${count} Docker start/use relationships lack readiness gates.`,
+      whyItMatters: "Starting the service and immediately invoking the Docker client races daemon initialization.",
+      impact: "Integration and bootstrap scripts fail intermittently after service or host startup.",
+      recommendation: "Before the first dependent Docker operation, use a bounded readiness probe such as retrying `docker info` and fail when the timeout expires."
+    },
+    {
       id: "go-project.editor-junk",
       title: "Editor or OS junk is tracked in the repository",
       category: "maintainability",
@@ -17188,6 +17802,7 @@ var domain = {
       signals.push(...curlBashSignals(file));
       signals.push(...unpinnedGoInstallSignals(file));
       signals.push(...staleMockeryVerificationSignals(file));
+      signals.push(...dockerDaemonReadinessSignals(file));
     }
     if (isBinaryPath(file.path)) {
       signals.push({
@@ -21543,8 +22158,7 @@ async function discoverSources(ctx) {
     files.push({
       path: source.path,
       current: source.content,
-      changedLines: change.changedLines,
-      status: change.status
+      ...change
     });
   }
   if (!wholeTarget) {
@@ -21580,7 +22194,8 @@ async function changedSource(ctx, path) {
   if (head !== void 0 && !ctx.change?.worktree) args2.push(head);
   args2.push("--", path);
   const patch = await gitOutput(ctx.repoPath, args2);
-  return { changedLines: changedLineNumbers(patch), status: "modified" };
+  const previous = await gitOutput(ctx.repoPath, ["show", `${base}:${path}`]);
+  return { changedLines: changedLineNumbers(patch), status: "modified", previous };
 }
 async function existsAtRevision(repoPath, revision, path) {
   try {
@@ -21747,7 +22362,7 @@ function addPositives(ctx, analysis) {
 function createApp() {
   const app = new Adversary({
     name: domain.name,
-    version: "0.0.9",
+    version: "0.0.11",
     review: { maximumFindings: 8, minimumConfidence: "medium" }
   });
   app.rule(`${domain.name}.review`, async (ctx) => {
