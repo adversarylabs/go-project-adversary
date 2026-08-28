@@ -1,4 +1,4 @@
-name: go/project
+name: adversarylabs/go/project
 version: 0.0.11
 description: "Reviews Go repository hygiene: shell-harness readiness, build-script prerequisites, supply-chain hazards, CI toolchain skew, and license presence."
 
