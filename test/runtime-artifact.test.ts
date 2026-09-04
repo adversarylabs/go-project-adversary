@@ -83,7 +83,7 @@ test("the published runtime executes without node_modules", async () => {
   const envelope = JSON.parse(await readFile(output, "utf8"));
   assert.equal(envelope.protocolVersion, 1);
   assert.equal(envelope.result.adversary.name, "go/project");
-  assert.equal(envelope.result.adversary.version, "0.0.11");
+  assert.equal(envelope.result.adversary.version, "0.0.12");
   assert.deepEqual(envelope.result.findings.map((finding: { ruleId: string }) => finding.ruleId), [
     "go-project.docker-start-without-readiness",
   ]);
